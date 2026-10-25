@@ -1,0 +1,11 @@
+node_modules/
+lib/
+data/
+coverage/
+*.log
+*.tmp
+
+# Local preview renders
+*.png
+!assets/**/*.png
+!client/**/*.png
