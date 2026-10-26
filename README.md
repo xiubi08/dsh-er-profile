@@ -19,7 +19,7 @@ DeepSeek Harness（DSH）的《永恒轮回》查询插件。提供玩家战绩�
   - 角色 × 武器维度，按 `tierScore` 排序
   - S/A/B/C/D 评级图、圆形头像、武器类型、伤害与 RP gain
 - **其他工具**
-  - `er_update_assets`：预下载/刷新本地资源库
+  - `er_update_assets`：刷新字典并按 URL 索引增量更新资源库
   - `er_alias`：玩家昵称别名
   - `er_group_config`：按群设置默认赛季/模式
 
@@ -48,6 +48,7 @@ config:
   dataDir: "C:/Users/you/.dsh/er-profile"
   renderWorkers: 2
   renderTimeoutMs: 60000
+  assetDownloadConcurrency: 6
 
   # 官方 Open API（可选）
   officialApiKeyRef: "ER_OPEN_API_KEY"
@@ -83,7 +84,21 @@ state/           别名、群设置、字典缓存
 output/          生成的 PNG
 ```
 
-资源采用**按需下载**：卡面第一次用到某张图时才下载并持久化；`er_update_assets` 可全量预下载。
+资源采用**按需下载**：卡面第一次用到某张图时才下载并持久化；`er_update_assets` 执行差异更新。
+
+## 资源更新
+
+`er_update_assets` 沿用旧 AstrBot 插件的资源比对逻辑：
+
+1. 强制重新拉取全部字典（绕过 12 小时缓存），确保 URL 是最新的。
+2. 读取 `assets/index.json`，逐项比对本地文件与远端 URL：
+   - 文件缺失 → 下载；
+   - URL 未变 → 视为正常，跳过；
+   - URL 变化 → 先 `HEAD` 比对 `ETag`（没有 `ETag` 时比对 `Content-Length`）；内容未变只更新索引里的 URL，内容变化才重新下载；
+   - 有文件但没有索引记录 → 视为正常并补写索引，避免首次升级时全量重下。
+3. 下载失败的条目会列在结果里，并在下次更新时自动重试。
+
+并发数由 `assetDownloadConcurrency` 控制（默认 6）。索引损坏或丢失时，更新会从磁盘上已有的文件重建基线。
 
 ## 缓存
 

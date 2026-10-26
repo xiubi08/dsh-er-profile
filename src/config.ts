@@ -20,6 +20,7 @@ export interface ErConfigInput {
   dataDir?: string
   fontsDir?: string
   assetsAutoDownload?: boolean
+  assetDownloadConcurrency?: number
   renderWorkers?: number
   renderTimeoutMs?: number
   officialApiKey?: string
@@ -33,6 +34,7 @@ export interface ResolvedConfig {
   dataDir: string
   fontsDir: string
   assetsAutoDownload: boolean
+  assetDownloadConcurrency: number
   renderWorkers: number
   renderTimeoutMs: number
   officialApiKey: string
@@ -113,6 +115,7 @@ export function resolveConfig(input: ErConfigInput | undefined): ResolvedConfig 
     dataDir: input?.dataDir ?? defaultDataDir(),
     fontsDir: input?.fontsDir ?? fileURLToPath(new URL('../assets/fonts', import.meta.url)),
     assetsAutoDownload: input?.assetsAutoDownload ?? true,
+    assetDownloadConcurrency: Math.max(1, Math.min(32, Math.trunc(input?.assetDownloadConcurrency ?? 6))),
     renderWorkers: Math.max(1, input?.renderWorkers ?? 1),
     renderTimeoutMs: Math.max(1_000, input?.renderTimeoutMs ?? 60_000),
     officialApiKey: input?.officialApiKey

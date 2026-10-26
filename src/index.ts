@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { ErApi, normalizeSeason, seasonIdForKey, seasonShortLabel } from './api/client.ts'
 import { OfficialApi } from './api/official.ts'
-import { AssetStore } from './data/assets.ts'
+import { AssetStore, type AssetUpdateReport } from './data/assets.ts'
 import { buildPlayerCard } from './data/mapper.ts'
 import { buildCharacterCard, TIER_ALIASES, TIER_LABELS } from './data/character.ts'
 import { buildCharacterRating } from './data/rating.ts'
@@ -111,7 +111,18 @@ interface DictionaryBundle {
   traits: TraitEntry[]
 }
 
-function getDictionaries(api: ErApi, dataDir: string): Promise<DictionaryBundle> {
+function getDictionaries(api: ErApi, dataDir: string, force = false): Promise<DictionaryBundle> {
+  if (force) {
+    dictionaries = (async () => {
+      const data = await fetchDictionaries(api)
+      await writeDictionaryCache(dataDir, data)
+      return data
+    })().catch(error => {
+      dictionaries = undefined
+      throw error
+    })
+    return dictionaries
+  }
   dictionaries ??= (async () => {
     const cachePath = join(dataDir, 'state', 'dictionaries.json')
     try {
@@ -130,24 +141,33 @@ function getDictionaries(api: ErApi, dataDir: string): Promise<DictionaryBundle>
         // A damaged cache is discarded and rebuilt below.
       }
     }
-    const [characters, tiers, items, masteries, skills, tactical, traits] = await Promise.all([
-      api.getCharacters(),
-      api.getTiers(),
-      api.getItems(),
-      api.getMasteries(),
-      api.getSkills(),
-      api.getTacticalSkills(),
-      api.getTraitSkills(),
-    ])
-    const data: DictionaryBundle = { characters, tiers, items, masteries, skills, tactical, traits }
-    await mkdir(dirname(cachePath), { recursive: true })
-    await writeFile(cachePath, JSON.stringify({ version: 1, fetchedAt: Date.now(), data }), 'utf8')
+    const data = await fetchDictionaries(api)
+    await writeDictionaryCache(dataDir, data)
     return data
   })().catch(error => {
     dictionaries = undefined
     throw error
   })
   return dictionaries
+}
+
+async function fetchDictionaries(api: ErApi): Promise<DictionaryBundle> {
+  const [characters, tiers, items, masteries, skills, tactical, traits] = await Promise.all([
+    api.getCharacters(),
+    api.getTiers(),
+    api.getItems(),
+    api.getMasteries(),
+    api.getSkills(),
+    api.getTacticalSkills(),
+    api.getTraitSkills(),
+  ])
+  return { characters, tiers, items, masteries, skills, tactical, traits }
+}
+
+async function writeDictionaryCache(dataDir: string, data: DictionaryBundle): Promise<void> {
+  const cachePath = join(dataDir, 'state', 'dictionaries.json')
+  await mkdir(dirname(cachePath), { recursive: true })
+  await writeFile(cachePath, JSON.stringify({ version: 1, fetchedAt: Date.now(), data }), 'utf8')
 }
 
 function parseArgs(raw: unknown): PlayerArgs {
@@ -621,10 +641,46 @@ function characterRankTool(ctx: Context, config: ResolvedConfig): ToolDefinition
   }
 }
 
-function assetUpdateTool(config: ResolvedConfig): ToolDefinition {
+const ASSET_CATEGORY_LABELS: Record<string, string> = {
+  characters: '角色头像',
+  character_skins: '角色皮肤',
+  items: '物品图标',
+  tiers: '段位图标',
+  tiers_full: '段位大图',
+  tactical_skills: '战术技能',
+  trait_skills: '特性技能',
+  masteries: '武器熟练度',
+  skills: '角色技能',
+}
+
+function formatAssetReport(report: AssetUpdateReport): string {
+  const lines = [
+    `资源库已更新：共 ${report.total} 项；正常 ${report.ok}，`
+      + `变更 ${report.changed}（重下 ${report.downloaded}，仅更新 URL ${report.adopted}），`
+      + `缺失 ${report.missing}，失败 ${report.failed}。`,
+  ]
+  for (const category of report.categories) {
+    if (category.total === 0) continue
+    lines.push(
+      `${ASSET_CATEGORY_LABELS[category.key] ?? category.key}：`
+        + `正常 ${category.ok} | 变更 ${category.changed} | 缺失 ${category.missing}`,
+    )
+  }
+  if (report.failed > 0) {
+    const shown = report.failures.slice(0, 5)
+      .map(failure => `${ASSET_CATEGORY_LABELS[failure.category] ?? failure.category} #${failure.key}`)
+    const suffix = report.failures.length > shown.length ? ` 等 ${report.failures.length} 项` : ''
+    lines.push(`失败：${shown.join('、')}${suffix}，下次更新会重试。`)
+  }
+  return lines.join('\n')
+}
+
+function assetUpdateTool(ctx: Context, config: ResolvedConfig): ToolDefinition {
   return {
     name: 'er_update_assets',
-    description: 'Download or refresh the local Eternal Return resource library (characters, items, tiers, weapons, skills, tactical skills, traits).',
+    description: 'Check the local Eternal Return resource library (characters, skins, items, tiers, weapons, '
+      + 'skills, tactical skills, traits) against the CDN. Forces a dictionary refresh, compares each asset URL '
+      + 'with the local index, and downloads only missing files or assets whose bytes changed.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     output: {
       schema: {
@@ -635,14 +691,32 @@ function assetUpdateTool(config: ResolvedConfig): ToolDefinition {
       },
       render: (_args, value) => [{ type: 'text', text: (value as { message: string }).message }],
     },
-    async execute() {
+    async execute(_raw, exec) {
       const api = new ErApi()
-      const { characters, tiers, items, masteries, skills, tactical, traits } = await getDictionaries(api, config.dataDir)
+      ctx.logger.info('er-profile: refreshing dictionaries and checking asset differences')
+      const { characters, tiers, items, masteries, skills, tactical, traits } =
+        await getDictionaries(api, config.dataDir, true)
       const assets = new AssetStore(config.dataDir, characters, tiers, items, skills, tactical, traits, masteries)
-      const result = await assets.prefetchAll()
-      return {
-        message: `资源库已更新：共 ${result.total} 项，失败 ${result.failed} 项。`,
+      let logged = 0
+      const report = await assets.updateAll({
+        concurrency: config.assetDownloadConcurrency,
+        signal: exec.signal,
+        onProgress: (done, total) => {
+          if (done - logged < 200 && done !== total) return
+          logged = done
+          ctx.logger.info(`er-profile: assets ${done}/${total}`)
+        },
+      })
+      ctx.logger.info(
+        `er-profile: assets done ok=${report.ok} changed=${report.changed} `
+          + `missing=${report.missing} failed=${report.failed}`,
+      )
+      for (const failure of report.failures) {
+        ctx.logger.warn(
+          `er-profile: asset download failed ${failure.category}/${failure.key}: ${failure.url}`,
+        )
       }
+      return { message: formatAssetReport(report) }
     },
   }
 }
@@ -758,7 +832,7 @@ export function apply(ctx: Context, input?: ErConfigInput): void {
     const disposePlayer = ctx.tools.register(playerTool(ctx, config, state))
     const disposeCharacter = ctx.tools.register(characterTool(ctx, config))
     const disposeRank = ctx.tools.register(characterRankTool(ctx, config))
-    const disposeAssets = ctx.tools.register(assetUpdateTool(config))
+    const disposeAssets = ctx.tools.register(assetUpdateTool(ctx, config))
     const disposeAlias = ctx.tools.register(aliasTool(state))
     const disposeGroup = ctx.tools.register(groupConfigTool(state))
     return () => {
