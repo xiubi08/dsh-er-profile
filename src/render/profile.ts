@@ -11,6 +11,10 @@ const HEADER_H = 250
 const SUMMARY_H = 250
 const HERO_ROW_H = 100
 const MATCH_H = 166
+const MATCH_VALUE_FONT = 26
+const MATCH_VALUE_BASELINE = 92
+const MATCH_LABEL_BASELINE = 116
+const MATCH_ITEM_TOP = 40
 const TEAMMATE_HEADER_H = 28
 const TEAMMATE_ROW_H = 112
 const TEAMMATE_SCALE = 0.98
@@ -460,12 +464,12 @@ function drawMatches(
     ctx.fillText(fitText(ctx, match.characterName, 96), x + 128, rowY + 134)
     ctx.textAlign = 'left'
 
-    ctx.font = font(28, 'bold')
+    ctx.font = font(MATCH_VALUE_FONT, 'bold')
     ctx.fillStyle = COLORS.text
-    ctx.fillText(`${match.teamKill}/${match.kills}/${match.assists}`, x + 180, rowY + 92)
+    ctx.fillText(`${match.teamKill}/${match.kills}/${match.assists}`, x + 180, rowY + MATCH_VALUE_BASELINE)
     ctx.font = font(15)
     ctx.fillStyle = COLORS.muted
-    ctx.fillText('TK / K / A', x + 180, rowY + 116)
+    ctx.fillText('TK / K / A', x + 180, rowY + MATCH_LABEL_BASELINE)
 
     if (match.weaponId > 0) {
       ctx.fillStyle = '#1f1f1f'
@@ -497,45 +501,48 @@ function drawMatches(
       containedImage(ctx, traits.get(match.traitSubId), x + 334, rowY + 79, 30, 30)
     }
 
-    if (index === 0) {
-      drawDamageBar(ctx, x + 400, rowY + 77, match.damage, 110, data.teamMaxDamage)
-    } else {
-      ctx.font = font(28, 'bold')
-      ctx.fillStyle = COLORS.text
-      ctx.fillText(match.damage.toLocaleString(), x + 400, rowY + 92)
-      ctx.font = font(15)
-      ctx.fillStyle = COLORS.muted
-      ctx.fillText('伤害', x + 400, rowY + 116)
-    }
-
-    ctx.font = font(28, 'bold')
+    ctx.font = font(MATCH_VALUE_FONT, 'bold')
     ctx.fillStyle = COLORS.text
-    ctx.fillText(match.kda.toFixed(2), x + 535, rowY + 92)
+    ctx.fillText(match.damage.toLocaleString(), x + 400, rowY + MATCH_VALUE_BASELINE)
     ctx.font = font(15)
     ctx.fillStyle = COLORS.muted
-    ctx.fillText('KDA', x + 535, rowY + 116)
+    ctx.fillText('伤害', x + 400, rowY + MATCH_LABEL_BASELINE)
+
+    ctx.font = font(MATCH_VALUE_FONT, 'bold')
+    ctx.fillStyle = COLORS.text
+    ctx.fillText(match.kda.toFixed(2), x + 535, rowY + MATCH_VALUE_BASELINE)
+    ctx.font = font(15)
+    ctx.fillStyle = COLORS.muted
+    ctx.fillText('KDA', x + 535, rowY + MATCH_LABEL_BASELINE)
 
     const cobaltMode = match.modeLabel === '钴协议' || match.modeLabel === '钴联盟'
     if (cobaltMode) {
       // Cobalt modes intentionally leave the old path/RP column empty.
     } else if (match.isRankMatch) {
-      ctx.font = font(22, 'bold')
-      ctx.fillStyle = COLORS.text
+      ctx.font = font(MATCH_VALUE_FONT, 'bold')
       const before = match.mmrBefore.toLocaleString()
-      ctx.fillText(before, x + 665, rowY + 92)
       const gain = match.mmrGain
-      ctx.fillStyle = gain >= 0 ? '#d94a63' : '#4a7bd9'
-      ctx.fillText(`${gain >= 0 ? '+' : ''}${gain}`, x + 665 + ctx.measureText(before).width + 6, rowY + 92)
-      ctx.font = font(15)
-      ctx.fillStyle = COLORS.muted
-      ctx.fillText('RP', x + 665, rowY + 116)
-    } else {
-      ctx.font = font(25, 'bold')
+      const gainText = `${gain >= 0 ? '+' : ''}${gain}`
+      const beforeWidth = ctx.measureText(before).width
+      const gainWidth = ctx.measureText(gainText).width
+      // Right-align the pair against the item column so a five-digit MMR plus
+      // a two-digit gain never runs into the equipment grid.
+      const right = x + w - 254
+      const start = right - beforeWidth - 6 - gainWidth
       ctx.fillStyle = COLORS.text
-      ctx.fillText(match.pathId > 0 ? String(match.pathId) : '—', x + 665, rowY + 92)
+      ctx.fillText(before, start, rowY + MATCH_VALUE_BASELINE)
+      ctx.fillStyle = gain >= 0 ? '#d94a63' : '#4a7bd9'
+      ctx.fillText(gainText, start + beforeWidth + 6, rowY + MATCH_VALUE_BASELINE)
       ctx.font = font(15)
       ctx.fillStyle = COLORS.muted
-      ctx.fillText('路径 ID', x + 665, rowY + 116)
+      ctx.fillText('RP', x + 665, rowY + MATCH_LABEL_BASELINE)
+    } else {
+      ctx.font = font(MATCH_VALUE_FONT, 'bold')
+      ctx.fillStyle = COLORS.text
+      ctx.fillText(match.pathId > 0 ? String(match.pathId) : '—', x + 665, rowY + MATCH_VALUE_BASELINE)
+      ctx.font = font(15)
+      ctx.fillStyle = COLORS.muted
+      ctx.fillText('路径 ID', x + 665, rowY + MATCH_LABEL_BASELINE)
     }
 
     const totalItems = Math.min(match.items.length, 6)
@@ -549,7 +556,7 @@ function drawMatches(
         items.get(item.id),
         item.grade,
         x + w - 248 + col * 76 + offset,
-        rowY + 35 + row * 54,
+        rowY + MATCH_ITEM_TOP + row * 54,
         66,
         46,
       )
