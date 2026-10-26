@@ -15,19 +15,38 @@ window.__ModuleLoader__.load({
       const character = meta && meta.character ? meta.character : undefined
       const characterStats = meta && meta.stats ? meta.stats : undefined
       const rank = meta && meta.rank ? meta.rank : undefined
-      const [url, setUrl] = React.useState(undefined)
+      // The rendered PNG lives in the plugin data directory. Serve it through
+      // the authenticated file route: the tool result only references the
+      // attachment in presentation meta, which the session attachment route
+      // does not authorize. The attachment loader stays as a fallback.
+      const fileUrl = React.useMemo(() => {
+        if (!image || typeof image.path !== 'string' || image.path === '') return undefined
+        try {
+          return new URL(`api/file?path=${encodeURIComponent(image.path)}`, document.baseURI).href
+        } catch (_error) {
+          return undefined
+        }
+      }, [image && image.path])
+      const [url, setUrl] = React.useState(fileUrl)
       const [failed, setFailed] = React.useState(false)
 
       React.useEffect(() => {
-        if (!attachment) return undefined
-        let cancelled = false
         setFailed(false)
+        if (fileUrl !== undefined) {
+          setUrl(fileUrl)
+          return undefined
+        }
+        if (!attachment) {
+          setUrl(undefined)
+          return undefined
+        }
+        let cancelled = false
         props.loadImage(attachment).then(
           value => { if (!cancelled) setUrl(value) },
           () => { if (!cancelled) setFailed(true) },
         )
         return () => { cancelled = true }
-      }, [attachment && attachment.attachmentId])
+      }, [fileUrl, attachment && attachment.attachmentId])
 
       if (phase !== 'result') {
         return h('div', { style: { padding: '10px 4px', color: 'var(--dsh-text-secondary, #8f6a78)', fontSize: 13 } },
@@ -58,14 +77,24 @@ window.__ModuleLoader__.load({
       return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, padding: '4px 0 8px' } },
         h('div', { style: { fontSize: 13, fontWeight: 600, color: 'var(--dsh-text-primary, #3c1e2d)' } }, caption),
         stats ? h('div', { style: { fontSize: 12, color: 'var(--dsh-text-secondary, #8f6a78)' } }, stats) : null,
-        url
-          ? h('img', {
+        url !== undefined && !failed
+          ? h('a', {
+              href: url,
+              target: '_blank',
+              rel: 'noopener noreferrer',
+              title: '打开原图',
+              style: { display: 'block' },
+            },
+            h('img', {
               src: url,
               alt: caption,
-              style: { width: '100%', maxWidth: 720, borderRadius: 12, display: 'block' },
-            })
-          : h('div', { style: { fontSize: 12, color: 'var(--dsh-text-secondary, #8f6a78)' } },
-              failed ? '战绩图加载失败，请查看上方文字摘要。' : '战绩图已生成，正在加载…'),
+              onError: () => { setFailed(true) },
+              style: { width: '100%', maxWidth: 560, borderRadius: 12, display: 'block' },
+            }))
+          : h('div', { style: { fontSize: 12, color: 'var(--dsh-text-secondary, #8f6a78)', wordBreak: 'break-all' } },
+              failed
+                ? `战绩图加载失败。原图：${image && image.path ? image.path : '未生成'}`
+                : '战绩图已生成，正在加载…'),
       )
     }
 

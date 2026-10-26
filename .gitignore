@@ -1,9 +1,19 @@
 node_modules/
 lib/
 /data/
+output/
 coverage/
 *.log
 *.tmp
+*.tsbuildinfo
+.pnpm-store/
+tmp/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
 
 # Local preview renders
 *.png

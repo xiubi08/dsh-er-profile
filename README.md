@@ -102,6 +102,7 @@ output/          生成的 PNG
 
 - 数据来自 dak.gg 非官方接口，接口结构可能变化。
 - 官方 Open API 为可选功能，需要自行申请 key。
+- Web 端卡片图由客户端使用已鉴权的 `/api/file?path=<绝对路径>` 路由直接读取 `output/` 下的 PNG；工具结果里的附件仅作为回退，因为会话附件授权只识别消息内容中的图片块，不识别 presentation meta。
 - 角色评级图使用 `assets/tier-grade/` 下的 S/A/B/C/D 图片。
 - 字体：MiSans（Bold / Semibold）与 Noto Sans KR。字体版权归各自权利人所有，发布前请确认授权。
 
