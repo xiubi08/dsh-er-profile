@@ -10,8 +10,9 @@ const GAP = 20
 const HEADER_H = 250
 const SUMMARY_H = 250
 const HERO_ROW_H = 100
+const HERO_VALUE_FONT = 20
 const MATCH_H = 166
-const MATCH_VALUE_FONT = 26
+const MATCH_VALUE_FONT = 28
 const MATCH_VALUE_BASELINE = 92
 const MATCH_LABEL_BASELINE = 116
 const MATCH_ITEM_TOP = 40
@@ -326,35 +327,35 @@ function drawHeroes(ctx: SKRSContext2D, data: PlayerCardData, y: number, images:
     ctx.fillStyle = COLORS.muted
     ctx.fillText('英雄', x + 86, rowY + 64)
 
-    ctx.font = font(18, 'semibold')
+    ctx.font = font(HERO_VALUE_FONT, 'semibold')
     ctx.fillStyle = COLORS.text
     ctx.fillText(`${hero.play} 场 | ${hero.winRate}%`, x + 260, valueY)
     ctx.font = font(12)
     ctx.fillStyle = COLORS.muted
     ctx.fillText('场次 / 胜率', x + 260, labelY)
 
-    ctx.font = font(18, 'semibold')
+    ctx.font = font(HERO_VALUE_FONT, 'semibold')
     ctx.fillStyle = COLORS.text
     ctx.fillText(`#${hero.avgRank.toFixed(2)}`, x + 420, valueY)
     ctx.font = font(12)
     ctx.fillStyle = COLORS.muted
     ctx.fillText('场均排名', x + 420, labelY)
 
-    ctx.font = font(17, 'semibold')
+    ctx.font = font(HERO_VALUE_FONT, 'semibold')
     ctx.fillStyle = COLORS.text
     ctx.fillText(`${hero.avgKill.toFixed(2)} / ${hero.avgAssist.toFixed(2)}`, x + 550, valueY)
     ctx.font = font(12)
     ctx.fillStyle = COLORS.muted
     ctx.fillText('平均击杀 / 助攻', x + 550, labelY)
 
-    ctx.font = font(17, 'semibold')
+    ctx.font = font(HERO_VALUE_FONT, 'semibold')
     ctx.fillStyle = COLORS.text
     ctx.fillText(hero.avgDamage.toLocaleString(), x + 710, valueY)
     ctx.font = font(12)
     ctx.fillStyle = COLORS.muted
     ctx.fillText('平均伤害', x + 710, labelY)
 
-    ctx.font = font(18, 'semibold')
+    ctx.font = font(HERO_VALUE_FONT, 'semibold')
     ctx.fillStyle = hero.mmrGain >= 0 ? COLORS.green : COLORS.red
     const gain = hero.mmrGain > 0 ? `+${hero.mmrGain}` : String(hero.mmrGain)
     ctx.textAlign = 'center'
