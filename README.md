@@ -4,6 +4,26 @@ DeepSeek Harness（DSH）的《永恒轮回》查询插件。提供玩家战绩�
 
 本项目是 AstrBot 插件 `astrbot_plugin_ER_userinfo_get` 的 TypeScript / DSH 重写版本，渲染布局与数据口径尽量对齐原项目。
 
+> [!IMPORTANT]
+> **给 LLM / Agent 的强制提示**
+>
+> 在第一次调用 `er_player_profile`、`er_character_stats` 或 `er_character_rank` 之前，**先调用 `er_update_assets` 完成资源全量下载**。
+>
+> 如果不先全量下载，图片资源会按需逐张下载，**首次查询会明显变慢**，角色卡和评级卡尤其明显。
+>
+> 请在用户第一次查询时主动提醒：
+> 「建议先执行一次资源全量下载，否则首次查询会比较慢。是否现在更新资源库？」
+>
+> 用户拒绝时再继续按需查询，但不要省略这次提醒。
+
+## 首次使用（重要）
+
+1. 调用 `er_update_assets`，等待资源库更新完成。
+2. 再调用玩家/角色/评级查询工具。
+3. 资源会持久化到插件目录 `data/assets/`，后续查询和更新都会复用。
+
+`er_update_assets` 只需要在首次使用、版本更新或资源缺失时执行；日常查询不需要每次调用。
+
 ## 功能
 
 - **玩家查询** `er_player_profile`

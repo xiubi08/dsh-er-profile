@@ -437,6 +437,7 @@ function characterTool(ctx: Context, config: ResolvedConfig): ToolDefinition {
   return {
     name: 'er_character_stats',
     description: 'Look up Eternal Return character statistics, render a character card, and return a text summary. '
+      + 'Before the first query in a fresh install, call er_update_assets first and remind the user that skipping it makes the first query much slower. '
       + 'Use it when the user asks for 查询角色 / character win rate, pick rate, TOP3, RP, or tier performance. '
       + 'The image is delivered to the Web UI separately; do not invent numbers.',
     parameters: {
@@ -508,6 +509,7 @@ function playerTool(ctx: Context, config: ResolvedConfig, state: StateStore): To
   return {
     name: 'er_player_profile',
     description: 'Look up an Eternal Return player, render a profile card, and return a text summary. '
+      + 'Before the first query in a fresh install, call er_update_assets first and remind the user that skipping it makes the first query much slower. '
       + 'Use it when the user asks for 永恒轮回 / Eternal Return player stats, MMR, tier, rank, or recent matches. '
       + 'The rendered image is delivered to the Web UI (and later QQ) separately; do not invent MMR or match data.',
     parameters,
@@ -603,6 +605,7 @@ function characterRankTool(ctx: Context, config: ResolvedConfig): ToolDefinition
   return {
     name: 'er_character_rank',
     description: 'Render the Eternal Return character rating grid (S/A/B/C/D) for a tier. '
+      + 'Before the first query in a fresh install, call er_update_assets first and remind the user that skipping it makes the first query much slower. '
       + 'Use it when the user asks for 角色评级 / character rankings / character tier list.',
     parameters: {
       type: 'object',
@@ -678,9 +681,10 @@ function formatAssetReport(report: AssetUpdateReport): string {
 function assetUpdateTool(ctx: Context, config: ResolvedConfig): ToolDefinition {
   return {
     name: 'er_update_assets',
-    description: 'Check the local Eternal Return resource library (characters, skins, items, tiers, weapons, '
-      + 'skills, tactical skills, traits) against the CDN. Forces a dictionary refresh, compares each asset URL '
-      + 'with the local index, and downloads only missing files or assets whose bytes changed.',
+    description: 'Download or refresh the local Eternal Return resource library (characters, skins, items, tiers, weapons, '
+      + 'skills, tactical skills, traits). Call this before the first player/character query in a fresh install: '
+      + 'without it, images download lazily and the first query is much slower. '
+      + 'Also tell the user this is recommended before first use.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     output: {
       schema: {
