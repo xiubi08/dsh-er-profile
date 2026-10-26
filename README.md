@@ -45,7 +45,7 @@ pnpm build
 
 ```yaml
 config:
-  dataDir: "C:/Users/you/.dsh/er-profile"
+  dataDir: "<plugin>/data"
   renderWorkers: 2
   renderTimeoutMs: 60000
   assetDownloadConcurrency: 6
@@ -76,15 +76,16 @@ config:
 
 ## 数据目录
 
-默认 `~/.dsh/er-profile`：
+默认使用插件目录下的 `data/`：
 
 ```
-assets/          持久化图片资源（角色、皮肤、装备、段位、技能等）
-state/           别名、群设置、字典缓存
-output/          生成的 PNG
+<plugin>/data/
+  assets/          持久化图片资源（角色、皮肤、装备、段位、技能等）
+  state/           别名、群设置、字典缓存
+  output/          生成的 PNG
 ```
 
-资源采用**按需下载**：卡面第一次用到某张图时才下载并持久化；`er_update_assets` 执行差异更新。
+可通过 `dataDir` 覆盖。资源采用**按需下载**：卡面第一次用到某张图时才下载并持久化；`er_update_assets` 执行差异更新。
 
 ## 资源更新
 

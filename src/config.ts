@@ -1,7 +1,5 @@
 /** Plugin configuration and resolved runtime paths. */
 
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export interface QqDeliveryConfig {
@@ -104,8 +102,7 @@ function normalizeAliases(
 }
 
 function defaultDataDir(): string {
-  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  return join(home, 'er-profile')
+  return fileURLToPath(new URL('../data', import.meta.url))
 }
 
 /** Resolve deployment configuration; unknown fields are ignored by design. */
