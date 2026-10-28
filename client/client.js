@@ -15,10 +15,12 @@ window.__ModuleLoader__.load({
       const character = meta && meta.character ? meta.character : undefined
       const characterStats = meta && meta.stats ? meta.stats : undefined
       const rank = meta && meta.rank ? meta.rank : undefined
-      // The rendered PNG lives in the plugin data directory. Serve it through
-      // the authenticated file route: the tool result only references the
-      // attachment in presentation meta, which the session attachment route
-      // does not authorize. The attachment loader stays as a fallback.
+      // Server ships a self-contained data: thumbnail (`image.preview`). A bare
+      // <img src> cannot carry the authenticated connection credential, so the
+      // api/file route and the attachment loader are only fallbacks.
+      const preview = image && typeof image.preview === 'string' && image.preview.startsWith('data:')
+        ? image.preview
+        : undefined
       const fileUrl = React.useMemo(() => {
         if (!image || typeof image.path !== 'string' || image.path === '') return undefined
         try {
@@ -27,11 +29,15 @@ window.__ModuleLoader__.load({
           return undefined
         }
       }, [image && image.path])
-      const [url, setUrl] = React.useState(fileUrl)
+      const [url, setUrl] = React.useState(preview !== undefined ? preview : fileUrl)
       const [failed, setFailed] = React.useState(false)
 
       React.useEffect(() => {
         setFailed(false)
+        if (preview !== undefined) {
+          setUrl(preview)
+          return undefined
+        }
         if (fileUrl !== undefined) {
           setUrl(fileUrl)
           return undefined
@@ -46,7 +52,7 @@ window.__ModuleLoader__.load({
           () => { if (!cancelled) setFailed(true) },
         )
         return () => { cancelled = true }
-      }, [fileUrl, attachment && attachment.attachmentId])
+      }, [preview, fileUrl, attachment && attachment.attachmentId])
 
       if (phase !== 'result') {
         return h('div', { style: { padding: '10px 4px', color: 'var(--dsh-text-secondary, #8f6a78)', fontSize: 13 } },
@@ -82,7 +88,7 @@ window.__ModuleLoader__.load({
               href: url,
               target: '_blank',
               rel: 'noopener noreferrer',
-              title: '打开原图',
+              title: preview !== undefined ? '在新标签页打开图片' : '打开原图',
               style: { display: 'block' },
             },
             h('img', {

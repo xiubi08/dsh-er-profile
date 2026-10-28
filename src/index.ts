@@ -1,7 +1,7 @@
 /** DSH tool surface for the Eternal Return profile plugin. */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { createCanvas } from '@napi-rs/canvas'
+import { createCanvas, loadImage } from '@napi-rs/canvas'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { ErApi, normalizeSeason, seasonIdForKey, seasonShortLabel } from './api/client.ts'
@@ -63,7 +63,33 @@ interface DeliveredImage {
   path: string
   width: number
   height: number
+  /**
+   * Inline `data:` preview of the card. The Web tool view cannot rely on the
+   * authenticated `api/file` route (a bare `<img src>` carries no connection
+   * credential), so it renders this self-contained thumbnail instead.
+   */
+  preview?: string
   attachment?: ImageAttachmentRef
+}
+
+/** Absolute path of the rendered PNG, so an agent can forward it (e.g. QQ file send). */
+function imagePathNote(path: string): string {
+  return `\n图片文件：${path}`
+}
+
+/** Downscale a rendered card to a small self-contained data URL for the Web view. */
+async function previewDataUrl(png: Buffer, maxWidth = 560): Promise<string | undefined> {
+  try {
+    const image = await loadImage(png)
+    const scale = Math.min(1, maxWidth / image.width)
+    const canvas = createCanvas(Math.max(1, Math.round(image.width * scale)), Math.max(1, Math.round(image.height * scale)))
+    const context = canvas.getContext('2d')
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+    const encoded = await canvas.encode('webp', 85)
+    return `data:image/webp;base64,${Buffer.from(encoded).toString('base64')}`
+  } catch {
+    return undefined
+  }
 }
 
 interface Rendered {
@@ -240,6 +266,7 @@ async function deliverPng(
   const path = join(outputDir, fileName)
   await writeFile(path, png)
   void pruneOutput(outputDir, config.outputRetention).catch(() => undefined)
+  const preview = await previewDataUrl(png)
 
   let attachment: ImageAttachmentRef | undefined
   const warnings: string[] = []
@@ -275,7 +302,7 @@ async function deliverPng(
   }
 
   return {
-    image: { path, width, height, ...(attachment === undefined ? {} : { attachment }) },
+    image: { path, width, height, ...(preview === undefined ? {} : { preview }), ...(attachment === undefined ? {} : { attachment }) },
     web: attachment === undefined ? 'file' : 'attachment',
     qq,
     ...(qqTransport === undefined ? {} : { qqTransport }),
@@ -645,7 +672,9 @@ function characterTool(ctx: Context, config: ResolvedConfig, texts: Texts, qqSto
       + 'Call er_update_assets first in a fresh install: without it, images download lazily during the first query and '
       + 'the card may show placeholders. The output reports `assets.missing` so you can tell the user when images are incomplete. '
       + 'Use it when the user asks for 查询角色 / character win rate, pick rate, TOP3, RP, or tier performance. '
-      + 'The image is delivered to the Web UI separately; do not invent numbers.',
+      + 'The image is delivered to the Web UI separately; the text output also reports the PNG path. '
+      + 'In an instant-messaging session (QQ), ALWAYS forward that PNG to the current chat with qqbot_send_file after a successful call (default behavior); skip only when the user asks for text only. '
+      + 'Do not invent numbers.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -689,7 +718,7 @@ function characterTool(ctx: Context, config: ResolvedConfig, texts: Texts, qqSto
           pickRate: typed.stats.pickRate,
           web: typed.delivery.web === 'attachment',
           qq: typed.delivery.qq === 'sent',
-        }) + note }]
+        }) + note + imagePathNote(typed.image.path) }]
       },
       presentationMeta: (_args, value) => {
         const typed = value as CharacterToolValue
@@ -746,7 +775,9 @@ function playerTool(ctx: Context, config: ResolvedConfig, texts: Texts, state: S
       + 'Call er_update_assets first in a fresh install: without it, images download lazily during the first query and '
       + 'the card may show placeholders. The output reports `assets.missing` so you can tell the user when images are incomplete. '
       + 'Use it when the user asks for 永恒轮回 / Eternal Return player stats, MMR, tier, rank, or recent matches. '
-      + 'The rendered image is delivered to the Web UI (and later QQ) separately; do not invent MMR or match data.',
+      + 'The rendered image is delivered to the Web UI separately; the text output also reports the PNG path. '
+      + 'In an instant-messaging session (QQ), ALWAYS forward that PNG to the current chat with qqbot_send_file after a successful call (default behavior); skip only when the user asks for text only. '
+      + 'Do not invent MMR or match data.',
     parameters,
     output: {
       schema: {
@@ -781,7 +812,7 @@ function playerTool(ctx: Context, config: ResolvedConfig, texts: Texts, state: S
           avgKill: typed.summary.avgKill,
           web: typed.delivery.web === 'attachment',
           qq: typed.delivery.qq === 'sent',
-        }) + note }]
+        }) + note + imagePathNote(typed.image.path) }]
       },
       presentationMeta: (_args, value) => {
         const typed = value as PlayerToolValue
@@ -814,7 +845,8 @@ function characterRankTool(ctx: Context, config: ResolvedConfig, texts: Texts, q
     description: 'Render the Eternal Return character rating grid (S/A/B/C/D) for a tier. '
       + 'Call er_update_assets first in a fresh install so character portraits are available; '
       + 'the output reports `assets.missing` when some are still missing. '
-      + 'Use it when the user asks for 角色评级 / character rankings / character tier list.',
+      + 'Use it when the user asks for 角色评级 / character rankings / character tier list. '
+      + 'In an instant-messaging session (QQ), ALWAYS forward the rendered PNG to the current chat with qqbot_send_file after a successful call (default behavior); skip only when the user asks for text only.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -847,7 +879,7 @@ function characterRankTool(ctx: Context, config: ResolvedConfig, texts: Texts, q
           subtitle: typed.rank.subtitle,
           web: typed.delivery.web === 'attachment',
           qq: typed.delivery.qq === 'sent',
-        }) + note }]
+        }) + note + imagePathNote(typed.image.path) }]
       },
       presentationMeta: (_args, value) => {
         const typed = value as CharacterRankToolValue
