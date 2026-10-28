@@ -14,9 +14,14 @@ import { loadImage, type Image } from '@napi-rs/canvas'
 import {
   loadAssetIndex, saveAssetIndex, type AssetIndexData, type AssetIndexEntry,
 } from './asset-index.ts'
+import { errorMessageOf } from '../util/errors.ts'
 import type { CharacterEntry, ItemEntry, MasteryEntry, SkillEntry, TacticalEntry, TierEntry, TraitEntry } from '../types.ts'
 
-const DOWNLOAD_TIMEOUT_MS = 20_000
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 20_000
+const DEFAULT_DOWNLOAD_RETRIES = 3
+/** Persist the index every N finished targets so an aborted run keeps its progress. */
+const INDEX_SAVE_EVERY = 25
+const INDEX_SAVE_INTERVAL_MS = 5_000
 
 interface DownloadMeta {
   etag?: string
@@ -45,6 +50,17 @@ export interface AssetFailure {
   category: string
   key: string
   url: string
+  reason?: string
+  /** True when the CDN answered 404: retrying cannot help for this game version. */
+  permanent?: boolean
+}
+
+/** One asset that failed to load while rendering (lazy path). */
+export interface AssetMiss {
+  category: string
+  key: string
+  url: string
+  reason: string
 }
 
 /** One complete resource check/update result. */
@@ -56,15 +72,33 @@ export interface AssetUpdateReport {
   downloaded: number
   adopted: number
   failed: number
+  /** Targets examined in this call. */
+  processed: number
+  /** Targets left for the next call (0 when `complete`). */
+  remaining: number
+  /** Whether this call finished the whole library. */
+  complete: boolean
+  /** Whether the caller's abort signal stopped the run early. */
+  aborted: boolean
+  /** Failures that are 404s (phantom entries in the upstream dictionary). */
+  unavailable: number
   categories: AssetCategoryReport[]
   failures: AssetFailure[]
 }
 
+/** Per-download network controls. */
+export interface DownloadOptions {
+  timeoutMs?: number
+  retries?: number
+}
+
 /** Caller controls for one update. */
-export interface AssetUpdateOptions {
+export interface AssetUpdateOptions extends DownloadOptions {
   concurrency?: number
   signal?: AbortSignal
   onProgress?: (done: number, total: number) => void
+  /** Stop starting new targets after this many milliseconds (partial run). */
+  budgetMs?: number
 }
 
 interface UpdateCounts {
@@ -74,6 +108,7 @@ interface UpdateCounts {
   downloaded: number
   adopted: number
   failed: number
+  unavailable: number
   categories: Map<string, AssetCategoryReport>
   failures: AssetFailure[]
 }
@@ -86,9 +121,13 @@ function normalizedUrl(value: string): string {
   return absoluteCdnUrl(value.trim())
 }
 
-function requestSignal(signal: AbortSignal | undefined): AbortSignal {
-  const timeout = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
+function requestSignal(signal: AbortSignal | undefined, timeoutMs = DEFAULT_DOWNLOAD_TIMEOUT_MS): AbortSignal {
+  const timeout = AbortSignal.timeout(Math.max(1_000, timeoutMs))
   return signal === undefined ? timeout : AbortSignal.any([signal, timeout])
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function metaFromHeaders(headers: Headers, fallbackSize?: number): DownloadMeta {
@@ -126,12 +165,12 @@ async function fileSize(path: string): Promise<number | undefined> {
 }
 
 /** HEAD one remote asset; failure means "cannot prove it is unchanged". */
-async function headMeta(url: string, signal: AbortSignal | undefined): Promise<DownloadMeta | undefined> {
+async function headMeta(url: string, signal: AbortSignal | undefined, timeoutMs?: number): Promise<DownloadMeta | undefined> {
   try {
     const response = await fetch(normalizedUrl(url), {
       method: 'HEAD',
       headers: { 'user-agent': 'Mozilla/5.0' },
-      signal: requestSignal(signal),
+      signal: requestSignal(signal, timeoutMs),
     })
     if (!response.ok) return undefined
     return metaFromHeaders(response.headers)
@@ -140,40 +179,70 @@ async function headMeta(url: string, signal: AbortSignal | undefined): Promise<D
   }
 }
 
-/** Download one file unless it already exists (or `force` is set). */
+/**
+ * Download one file unless it already exists (or `force` is set).
+ * Retries transient failures (network, timeout, 429, 5xx) with backoff and
+ * reports a human-readable `reason` when it finally gives up.
+ */
 async function downloadFile(
   url: string,
   path: string,
   force: boolean,
   signal: AbortSignal | undefined,
-): Promise<{ ok: boolean; meta?: DownloadMeta }> {
+  options: DownloadOptions = {},
+): Promise<{ ok: boolean; meta?: DownloadMeta; reason?: string; status?: number }> {
   if (!force && await fileSize(path) !== undefined) return { ok: true }
-  try {
-    const response = await fetch(normalizedUrl(url), {
-      headers: { 'user-agent': 'Mozilla/5.0' },
-      signal: requestSignal(signal),
-    })
-    if (!response.ok) return { ok: false }
-    const bytes = Buffer.from(await response.arrayBuffer())
-    if (bytes.byteLength === 0) return { ok: false }
-    await mkdir(dirname(path), { recursive: true })
-    const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
-    await writeFile(temporary, bytes)
+  const attempts = Math.max(1, Math.min(6, Math.trunc(options.retries ?? DEFAULT_DOWNLOAD_RETRIES)))
+  const timeoutMs = Math.max(1_000, options.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS)
+  const aborted = (): boolean => signal?.aborted === true
+  let reason = 'unknown error'
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (aborted()) return { ok: false, reason: 'aborted' }
     try {
-      await rename(temporary, path)
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== 'EEXIST' && code !== 'EPERM') {
-        await rm(temporary, { force: true })
-        throw error
+      const response = await fetch(normalizedUrl(url), {
+        headers: { 'user-agent': 'Mozilla/5.0' },
+        signal: requestSignal(signal, timeoutMs),
+      })
+      if (!response.ok) {
+        reason = `HTTP ${response.status}`
+        const transient = response.status === 429 || response.status >= 500
+        if (transient && attempt < attempts) {
+          await sleep(Math.min(4_000, 400 * 2 ** (attempt - 1)))
+          continue
+        }
+        return { ok: false, reason, status: response.status }
       }
-      await rm(path, { force: true })
-      await rename(temporary, path)
+      const bytes = Buffer.from(await response.arrayBuffer())
+      if (bytes.byteLength === 0) {
+        reason = 'empty body'
+        if (attempt < attempts) {
+          await sleep(Math.min(4_000, 400 * 2 ** (attempt - 1)))
+          continue
+        }
+        return { ok: false, reason }
+      }
+      await mkdir(dirname(path), { recursive: true })
+      const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
+      await writeFile(temporary, bytes)
+      try {
+        await rename(temporary, path)
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'EEXIST' && code !== 'EPERM') {
+          await rm(temporary, { force: true })
+          throw error
+        }
+        await rm(path, { force: true })
+        await rename(temporary, path)
+      }
+      return { ok: true, meta: metaFromHeaders(response.headers, bytes.byteLength) }
+    } catch (error) {
+      if (aborted()) return { ok: false, reason: 'aborted' }
+      reason = errorMessageOf(error)
+      if (attempt < attempts) await sleep(Math.min(4_000, 400 * 2 ** (attempt - 1)))
     }
-    return { ok: true, meta: metaFromHeaders(response.headers, bytes.byteLength) }
-  } catch {
-    return { ok: false }
   }
+  return { ok: false, reason }
 }
 
 function entryFor(target: AssetTarget, meta: DownloadMeta | undefined): AssetIndexEntry {
@@ -200,9 +269,20 @@ function categoryReport(counts: UpdateCounts, key: string): AssetCategoryReport 
   return created
 }
 
-function recordFailure(counts: UpdateCounts, target: AssetTarget): void {
+function recordFailure(counts: UpdateCounts, target: AssetTarget, reason?: string, status?: number): void {
+  // 4xx (403/404/410…) means the upstream dictionary points at bytes the CDN
+  // will never serve for this game version; 408/429 are still worth retrying.
+  const permanent = status !== undefined && status >= 400 && status < 500
+    && status !== 408 && status !== 429
   counts.failed += 1
-  counts.failures.push({ category: target.category, key: target.key, url: normalizedUrl(target.url) })
+  if (permanent) counts.unavailable += 1
+  counts.failures.push({
+    category: target.category,
+    key: target.key,
+    url: normalizedUrl(target.url),
+    ...(reason === undefined ? {} : { reason }),
+    ...(permanent ? { permanent } : {}),
+  })
 }
 
 /** Loads portraits and tier icons into a persistent on-disk resource library. */
@@ -216,6 +296,7 @@ export class AssetStore {
   private readonly tactical = new Map<number, TacticalEntry>()
   private readonly traits = new Map<number, TraitEntry>()
   private readonly images = new Map<string, Promise<Image | undefined>>()
+  private readonly misses = new Map<string, AssetMiss>()
 
   constructor(
     private readonly dataDir: string,
@@ -226,6 +307,7 @@ export class AssetStore {
     tactical: readonly TacticalEntry[] = [],
     traits: readonly TraitEntry[] = [],
     masteries: readonly MasteryEntry[] = [],
+    private readonly downloadOptions: DownloadOptions = {},
   ) {
     for (const character of characters) {
       this.characters.set(character.id, character)
@@ -251,7 +333,7 @@ export class AssetStore {
     return this.loadOnce(`character:${id}`, async () => {
       const entry = this.characters.get(id)
       if (entry === undefined || entry.imageUrl === '') return undefined
-      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'characters', `${id}.png`))
+      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'characters', `${id}.png`), 'characters', String(id))
     })
   }
 
@@ -259,7 +341,7 @@ export class AssetStore {
     return this.loadOnce(`tier:${id}`, async () => {
       const entry = this.tiers.get(id)
       if (entry === undefined || entry.iconUrl === '') return undefined
-      return this.loadPng(entry.iconUrl, join(this.dataDir, 'assets', 'tiers', `${id}.png`))
+      return this.loadPng(entry.iconUrl, join(this.dataDir, 'assets', 'tiers', `${id}.png`), 'tiers', String(id))
     })
   }
 
@@ -267,7 +349,7 @@ export class AssetStore {
     return this.loadOnce(`tier-full:${id}`, async () => {
       const entry = this.tiers.get(id)
       if (entry === undefined || entry.imageUrl === undefined || entry.imageUrl === '') return undefined
-      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'tiers_full', `${id}.png`))
+      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'tiers_full', `${id}.png`), 'tiers_full', String(id))
     })
   }
 
@@ -287,7 +369,7 @@ export class AssetStore {
     return this.loadOnce(`mastery:${id}`, async () => {
       const entry = this.masteries.get(id)
       if (entry === undefined || entry.iconUrl === undefined || entry.iconUrl === '') return undefined
-      return this.loadPng(entry.iconUrl, join(this.dataDir, 'assets', 'masteries', `${id}.png`))
+      return this.loadPng(entry.iconUrl, join(this.dataDir, 'assets', 'masteries', `${id}.png`), 'masteries', String(id))
     })
   }
 
@@ -296,7 +378,7 @@ export class AssetStore {
     return this.loadOnce(`skin:${id}`, async () => {
       const entry = this.skins.get(id)
       if (entry === undefined || entry.imageUrl === '') return undefined
-      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'character_skins', `${id}.png`))
+      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'character_skins', `${id}.png`), 'character_skins', String(id))
     })
   }
 
@@ -304,7 +386,7 @@ export class AssetStore {
     return this.loadOnce(`item:${id}`, async () => {
       const entry = this.items.get(id)
       if (entry === undefined || entry.imageUrl === '') return undefined
-      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'items', `${id}.png`))
+      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'items', `${id}.png`), 'items', String(id))
     })
   }
 
@@ -316,7 +398,7 @@ export class AssetStore {
     return this.loadOnce(`skill:${id}`, async () => {
       const entry = this.skills.get(id)
       if (entry === undefined || entry.imageUrl === '') return undefined
-      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'skills', `${id}.png`))
+      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'skills', `${id}.png`), 'skills', String(id))
     })
   }
 
@@ -328,7 +410,7 @@ export class AssetStore {
     return this.loadOnce(`tactical:${id}`, async () => {
       const entry = this.tactical.get(id)
       if (entry === undefined || entry.imageUrl === '') return undefined
-      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'tactical_skills', `${id}.png`))
+      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'tactical_skills', `${id}.png`), 'tactical_skills', String(id))
     })
   }
 
@@ -340,8 +422,18 @@ export class AssetStore {
     return this.loadOnce(`trait:${id}`, async () => {
       const entry = this.traits.get(id)
       if (entry === undefined || entry.imageUrl === '') return undefined
-      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'trait_skills', `${id}.png`))
+      return this.loadPng(entry.imageUrl, join(this.dataDir, 'assets', 'trait_skills', `${id}.png`), 'trait_skills', String(id))
     })
+  }
+
+  /** Assets that failed to load (deduped by category/key) since this store was created. */
+  get missingAssets(): AssetMiss[] {
+    return [...this.misses.values()]
+  }
+
+  /** Short `category#key (reason)` fragments for tool warnings. */
+  missingSample(limit = 6): string[] {
+    return this.missingAssets.slice(0, limit).map(miss => `${miss.category}#${miss.key} (${miss.reason})`)
   }
 
   private loadOnce(key: string, load: () => Promise<Image | undefined>): Promise<Image | undefined> {
@@ -352,13 +444,22 @@ export class AssetStore {
     return pending
   }
 
-  private async loadPng(url: string, path: string): Promise<Image | undefined> {
-    await mkdir(dirname(path), { recursive: true })
-    const downloaded = await downloadFile(url, path, false, undefined)
-    if (!downloaded.ok) return undefined
+  private async loadPng(url: string, path: string, category: string, key: string): Promise<Image | undefined> {
+    const missKey = `${category}:${key}`
     try {
+      await mkdir(dirname(path), { recursive: true })
+      const downloaded = await downloadFile(url, path, false, undefined, this.downloadOptions)
+      if (!downloaded.ok) {
+        this.misses.set(missKey, {
+          category, key, url: normalizedUrl(url), reason: downloaded.reason ?? 'download failed',
+        })
+        return undefined
+      }
       return await loadImage(path)
-    } catch {
+    } catch (error) {
+      this.misses.set(missKey, {
+        category, key, url: normalizedUrl(url), reason: errorMessageOf(error),
+      })
       return undefined
     }
   }
@@ -392,33 +493,56 @@ export class AssetStore {
   /**
    * Check every known asset against the persisted URL index and download only
    * missing or genuinely changed bytes.
-   * @param options - concurrency, cancellation, and progress callback.
-   * @returns per-category and aggregate counts.
+   *
+   * A run stops early when `budgetMs` or the abort signal fires; the index is
+   * flushed periodically, so the next call resumes without re-checking what this
+   * one already recorded.
+   * @param options - concurrency, cancellation, time budget, progress callback.
+   * @returns per-category and aggregate counts plus `remaining`/`complete`.
    */
   async updateAll(options: AssetUpdateOptions = {}): Promise<AssetUpdateReport> {
     const targets = this.targets()
     const indexPath = join(this.dataDir, 'assets', 'index.json')
     const index: AssetIndexData = await loadAssetIndex(indexPath)
     const counts: UpdateCounts = {
-      ok: 0, changed: 0, missing: 0, downloaded: 0, adopted: 0, failed: 0, categories: new Map(), failures: [],
+      ok: 0, changed: 0, missing: 0, downloaded: 0, adopted: 0, failed: 0, unavailable: 0,
+      categories: new Map(), failures: [],
     }
     const concurrency = Math.max(1, Math.min(32, Math.trunc(options.concurrency ?? 6)))
+    const budgetMs = Math.max(0, Math.trunc(options.budgetMs ?? 0))
+    const deadline = budgetMs > 0 ? Date.now() + budgetMs : Number.POSITIVE_INFINITY
+    const shouldStop = (): boolean => options.signal?.aborted === true || Date.now() >= deadline
     let cursor = 0
     let done = 0
+    let dirty = 0
+    let lastSaved = Date.now()
+    let saveChain: Promise<void> = Promise.resolve()
+    const flush = async (force = false): Promise<void> => {
+      if (!force && dirty < INDEX_SAVE_EVERY && Date.now() - lastSaved < INDEX_SAVE_INTERVAL_MS) return
+      dirty = 0
+      lastSaved = Date.now()
+      // A failed index write must not fail the whole update; the on-disk files
+      // are still valid and the next run rebuilds the index from them.
+      saveChain = saveChain.then(() => saveAssetIndex(indexPath, index)).catch(() => undefined)
+      await saveChain
+    }
     const worker = async (): Promise<void> => {
-      while (true) {
+      while (!shouldStop()) {
         const position = cursor
         cursor += 1
-        if (position >= targets.length || options.signal?.aborted === true) return
+        if (position >= targets.length) return
         const target = targets[position]
         if (target === undefined) continue
-        await this.updateOne(target, index, counts, options.signal)
+        await this.updateOne(target, index, counts, options)
         done += 1
+        dirty += 1
         options.onProgress?.(done, targets.length)
+        await flush()
       }
     }
     await Promise.all(Array.from({ length: Math.min(concurrency, targets.length) }, worker))
-    await saveAssetIndex(indexPath, index)
+    await flush(true)
+    const aborted = options.signal?.aborted === true
     return {
       total: targets.length,
       ok: counts.ok,
@@ -427,6 +551,11 @@ export class AssetStore {
       downloaded: counts.downloaded,
       adopted: counts.adopted,
       failed: counts.failed,
+      processed: done,
+      remaining: Math.max(0, targets.length - done),
+      complete: done >= targets.length && !aborted,
+      aborted,
+      unavailable: counts.unavailable,
       categories: [...counts.categories.values()],
       failures: counts.failures,
     }
@@ -436,9 +565,9 @@ export class AssetStore {
     target: AssetTarget,
     index: AssetIndexData,
     counts: UpdateCounts,
-    signal: AbortSignal | undefined,
+    options: AssetUpdateOptions,
   ): Promise<void> {
-    if (signal?.aborted === true) return
+    if (options.signal?.aborted === true) return
     const category = categoryReport(counts, target.category)
     category.total += 1
     const records = index.categories[target.category] ?? (index.categories[target.category] = {})
@@ -447,12 +576,12 @@ export class AssetStore {
     if (size === undefined) {
       category.missing += 1
       counts.missing += 1
-      const downloaded = await downloadFile(target.url, target.path, true, signal)
+      const downloaded = await downloadFile(target.url, target.path, true, options.signal, options)
       if (downloaded.ok) {
         counts.downloaded += 1
         records[target.key] = entryFor(target, downloaded.meta)
       } else {
-        recordFailure(counts, target)
+        recordFailure(counts, target, downloaded.reason, downloaded.status)
       }
       return
     }
@@ -465,18 +594,18 @@ export class AssetStore {
     }
     category.changed += 1
     counts.changed += 1
-    const remote = await headMeta(target.url, signal)
+    const remote = await headMeta(target.url, options.signal, options.timeoutMs)
     if (sameContent(previous, remote, size)) {
       counts.adopted += 1
       records[target.key] = adoptEntry(previous, target, remote)
       return
     }
-    const downloaded = await downloadFile(target.url, target.path, true, signal)
+    const downloaded = await downloadFile(target.url, target.path, true, options.signal, options)
     if (downloaded.ok) {
       counts.downloaded += 1
       records[target.key] = entryFor(target, downloaded.meta)
     } else {
-      recordFailure(counts, target)
+      recordFailure(counts, target, downloaded.reason, downloaded.status)
     }
   }
 }

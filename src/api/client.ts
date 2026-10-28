@@ -1,5 +1,6 @@
-/** Minimal dak.gg client with the retry behavior the original plugin relied on. */
+/** Minimal dak.gg client with retries, typed errors, and configurable timeouts. */
 
+import { ErError, errorMessageOf } from '../util/errors.ts'
 import type {
   CharacterEntry,
   CharacterStatsSnapshot,
@@ -48,39 +49,65 @@ export function seasonShortLabel(key: string): string {
 
 export interface ApiOptions {
   readonly userAgent?: string
+  /** Per-attempt HTTP timeout. */
   readonly timeoutMs?: number
+  /** Total attempts per request (1 = no retry). */
+  readonly retries?: number
 }
 
 interface JsonRecord {
   [key: string]: unknown
 }
 
-/** One HTTP boundary: retries 5xx/network, refuses 4xx immediately. */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/** One HTTP boundary: retries 5xx/429/network, refuses other 4xx immediately. */
 async function request<T>(url: string, options: ApiOptions, signal?: AbortSignal): Promise<T> {
-  const timeout = AbortSignal.timeout(options.timeoutMs ?? 20_000)
-  const combined = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
-  let lastError: Error | undefined
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  const timeoutMs = Math.max(1_000, options.timeoutMs ?? 20_000)
+  const attempts = Math.max(1, Math.min(6, Math.trunc(options.retries ?? 3)))
+  let lastError: ErError | undefined
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const timeout = AbortSignal.timeout(timeoutMs)
+    const combined = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
+    let response: Response
     try {
-      const response = await fetch(url, {
+      response = await fetch(url, {
         headers: {
           'user-agent': options.userAgent ?? 'Mozilla/5.0',
           accept: 'application/json,text/plain,*/*',
         },
         signal: combined,
       })
-      if (response.status >= 400 && response.status < 500) {
-        throw new Error(`dak.gg rejected the request (HTTP ${response.status})`)
-      }
-      if (!response.ok) throw new Error(`dak.gg server error (HTTP ${response.status})`)
-      return await response.json() as T
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error))
-      if (combined.aborted) throw lastError
-      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 500 * 2 ** (attempt - 1)))
+      if (signal?.aborted === true) throw new ErError('aborted', 'request aborted', { cause: error })
+      lastError = timeout.aborted
+        ? new ErError('timeout', `dak.gg request timed out after ${timeoutMs} ms`, { cause: error })
+        : new ErError('network_error', `network error: ${errorMessageOf(error)}`, { cause: error })
+      if (attempt < attempts) await sleep(Math.min(4_000, 500 * 2 ** (attempt - 1)))
+      continue
     }
+    if (response.ok) {
+      try {
+        return await response.json() as T
+      } catch (error) {
+        lastError = new ErError('http_error', `dak.gg sent invalid JSON (HTTP ${response.status})`, {
+          status: response.status, cause: error,
+        })
+        if (attempt < attempts) await sleep(Math.min(4_000, 500 * 2 ** (attempt - 1)))
+        continue
+      }
+    }
+    const status = response.status
+    if (status === 429 || status >= 500) {
+      lastError = new ErError('http_error', `dak.gg returned HTTP ${status}`, { status })
+      if (attempt < attempts) await sleep(Math.min(4_000, 500 * 2 ** (attempt - 1)))
+      continue
+    }
+    throw new ErError('http_error', `dak.gg returned HTTP ${status}`, { status })
   }
-  throw lastError ?? new Error('dak.gg request failed')
+  throw lastError ?? new ErError('network_error', 'dak.gg request failed')
 }
 
 /** Small typed wrapper around the public dak.gg endpoints. */
@@ -106,7 +133,14 @@ export class ErApi {
 
   async getProfile(player: string, season: string | undefined, signal?: AbortSignal): Promise<Profile> {
     const query = season === undefined ? '' : `?season=${encodeURIComponent(season)}`
-    return this.get<Profile>(`/players/${encodeURIComponent(player)}/profile${query}`, signal)
+    try {
+      return await this.get<Profile>(`/players/${encodeURIComponent(player)}/profile${query}`, signal)
+    } catch (error) {
+      if (error instanceof ErError && error.status === 404) {
+        throw new ErError('player_not_found', `player not found: ${player}`, { status: 404, cause: error })
+      }
+      throw error
+    }
   }
 
   async getCharacters(signal?: AbortSignal): Promise<CharacterEntry[]> {
@@ -180,6 +214,7 @@ export class ErApi {
     })
     const url = `https://dak.gg/er/characters/${encodeURIComponent(characterKey)}?${query.toString()}`
     let lastError: Error | undefined
+    const timeoutMs = Math.max(1_000, this.options.timeoutMs ?? 20_000)
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
         const response = await fetch(url, {
@@ -188,8 +223,9 @@ export class ErApi {
             accept: 'text/html',
             'accept-language': 'zh-CN,zh;q=0.9',
           },
-          signal: signal === undefined ? AbortSignal.timeout(20_000) : AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+          signal: signal === undefined ? AbortSignal.timeout(timeoutMs) : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
         })
+        if (response.status === 404) return {}
         if (!response.ok) throw new Error(`character page HTTP ${response.status}`)
         const html = await response.text()
         const match = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/u)

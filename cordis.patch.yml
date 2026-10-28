@@ -1,46 +1,16 @@
+# Bundle defaults for the er-profile plugin.
+#
+# Character/weapon aliases are NOT repeated here: they live in src/config.ts
+# (DEFAULT_CHARACTER_ALIASES / DEFAULT_WEAPON_ALIASES) and user overrides are
+# merged on top. Add only the keys you want to override, e.g.:
+#
+#   config:
+#     locale: en
+#     characterAliases:
+#       猫: 爱琳
+#     outputRetention:
+#       maxFiles: 100
 - insert:
     - id: er-profile
       name: '@local/dsh-er-profile'
-      config:
-        characterAliases:
-          c0: "席琳"
-          usdn: "尤斯蒂娜"
-          下棋: "阿德拉"
-          人偶: "克洛伊"
-          兔子: "艾玛"
-          冰女: "埃琳娜"
-          剑姬: "菲欧娜"
-          医生: "凯希"
-          占星: "阿迪娜"
-          卡提亚: "卡缇娅"
-          卡提娅: "卡缇娅"
-          双子: "黛比&玛莲"
-          吸血鬼: "比安卡"
-          哈基米: "爱琳"
-          嘉豪: "克雷弗"
-          基米: "爱琳"
-          女猎: "娜町"
-          女相机: "玛蒂娜"
-          提琴: "莉诺尔"
-          机车: "西尔维娅"
-          松鼠: "蒂娅"
-          特工: "亚历克斯"
-          猫: "爱琳"
-          猫头鹰: "卡缇娅"
-          玻璃: "塔齐娅"
-          男相机: "纳塔朋"
-          病女: "希瑟拉"
-          花女: "普里亚"
-          蝴蝶: "万尼亚"
-          赵云: "费利克斯"
-          酒妹: "李黛琳"
-          阿三: "扎希尔"
-          黑人: "扬"
-        weaponAliases:
-          刺剑: "西洋剑"
-          匕首: "短剑"
-          单刀: "双手剑"
-          双刀: "双剑"
-          小刀: "短剑"
-          机枪: "突击步枪"
-          转棍: "旋棍"
+      config: {}

@@ -24,6 +24,7 @@ interface RenderJob {
   dataDir: string
   fontDir: string
   characterId?: number
+  net?: { timeoutMs?: number; retries?: number }
 }
 
 parentPort?.on('message', async (job: RenderJob) => {
@@ -37,6 +38,7 @@ parentPort?.on('message', async (job: RenderJob) => {
       job.dictionaries.tactical,
       job.dictionaries.traits,
       job.dictionaries.masteries,
+      job.net ?? {},
     )
     let rendered: { png: Buffer; width: number; height: number }
     if (job.kind === 'player') {
@@ -52,6 +54,8 @@ parentPort?.on('message', async (job: RenderJob) => {
       png: bytes,
       width: rendered.width,
       height: rendered.height,
+      missingCount: assets.missingAssets.length,
+      missing: assets.missingSample(6),
     }, [bytes.buffer])
   } catch (error) {
     parentPort?.postMessage({ id: job.id, error: error instanceof Error ? error.message : String(error) })

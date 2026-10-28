@@ -19,11 +19,23 @@ export interface RenderJob {
   dataDir: string
   fontDir: string
   characterId?: number
+  /** Network controls for lazy asset downloads inside the worker. */
+  net?: { timeoutMs?: number; retries?: number }
+}
+
+export interface RenderResult {
+  png: Buffer
+  width: number
+  height: number
+  /** How many assets failed to load during this render. */
+  missingCount: number
+  /** `category#key (reason)` samples for the tool warning. */
+  missing: string[]
 }
 
 interface QueuedJob {
   job: RenderJob
-  resolve: (value: { png: Buffer; width: number; height: number }) => void
+  resolve: (value: RenderResult) => void
   reject: (reason: unknown) => void
   timer: NodeJS.Timeout
 }
@@ -46,7 +58,7 @@ export class RenderWorkerPool {
     private readonly timeoutMs: number,
   ) {}
 
-  render(job: RenderJob): Promise<{ png: Buffer; width: number; height: number }> {
+  render(job: RenderJob): Promise<RenderResult> {
     if (this.closed) return Promise.reject(new Error('render pool is closed'))
     return new Promise((resolve, reject) => {
       const item = { job, resolve, reject }
@@ -97,6 +109,8 @@ export class RenderWorkerPool {
       png?: Uint8Array
       width?: number
       height?: number
+      missingCount?: number
+      missing?: string[]
       error?: string
     }) => {
       const current = slot.current
@@ -111,6 +125,8 @@ export class RenderWorkerPool {
           png: Buffer.from(message.png ?? new Uint8Array()),
           width: message.width ?? 0,
           height: message.height ?? 0,
+          missingCount: message.missingCount ?? 0,
+          missing: message.missing ?? [],
         })
       }
       const next = this.queue.shift()
